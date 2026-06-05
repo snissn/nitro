@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/node"
@@ -32,9 +33,11 @@ func openDB(config *DBConfig, name string, readonly bool) (ethdb.Database, error
 		DbEngine:  config.DBEngine,
 		Directory: config.Data,
 		DatabaseOptions: node.DatabaseOptions{
-			// we don't open freezer, it doesn't need to be converted as it has format independent of db-engine
-			// note: user needs to handle copying/moving the ancient directory
+			// We don't open the freezer. It doesn't need to be converted as it has a
+			// format independent of db-engine; users need to handle copying/moving the
+			// ancient directory separately.
 			AncientsDirectory:  "",
+			NoFreezer:          true,
 			MetricsNamespace:   config.Namespace,
 			Cache:              config.Cache,
 			Handles:            config.Handles,
@@ -91,20 +94,22 @@ func (c *DBConverter) Convert(ctx context.Context) error {
 			entriesInBatch = 0
 		}
 	}
-	if err = ctx.Err(); err == nil {
-		batchSize := batch.ValueSize()
-		if err = batch.Write(); err != nil {
-			return err
-		}
-		c.stats.LogEntries(int64(entriesInBatch))
-		c.stats.LogBytes(int64(batchSize))
+	if err = ctx.Err(); err != nil {
+		return err
 	}
-	if err == nil {
-		if err = dbutil.DeleteUnfinishedConversionCanary(dst); err != nil {
-			return err
-		}
+	if err = it.Error(); err != nil {
+		return fmt.Errorf("source iterator error: %w", err)
 	}
-	return err
+	batchSize := batch.ValueSize()
+	if err = batch.Write(); err != nil {
+		return err
+	}
+	c.stats.LogEntries(int64(entriesInBatch))
+	c.stats.LogBytes(int64(batchSize))
+	if err = dbutil.DeleteUnfinishedConversionCanary(dst); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (c *DBConverter) CompactDestination() error {
@@ -123,10 +128,13 @@ func (c *DBConverter) CompactDestination() error {
 }
 
 func (c *DBConverter) Verify(ctx context.Context) error {
-	if c.config.Verify == "keys" {
+	switch c.config.Verify {
+	case "keys":
 		log.Info("Starting quick verification - verifying only keys existence")
-	} else if c.config.Verify == "full" {
+	case "full":
 		log.Info("Starting full verification - verifying keys and values")
+	default:
+		return fmt.Errorf("Invalid verify config value: %v", c.config.Verify)
 	}
 	var err error
 	src, err := openDB(&c.config.Src, "src", true)
@@ -158,10 +166,13 @@ func (c *DBConverter) Verify(ctx context.Context) error {
 		case "full":
 			dstValue, err := dst.Get(it.Key())
 			if err != nil {
+				if rawdb.IsDbErrNotFound(err) {
+					return fmt.Errorf("Missing key in destination db, key: %v", it.Key())
+				}
 				return err
 			}
 			if !bytes.Equal(dstValue, it.Value()) {
-				return fmt.Errorf("Value mismatch for key: %v, src value: %v, dst value: %s", it.Key(), it.Value(), dstValue)
+				return fmt.Errorf("Value mismatch for key: %v, src value: %v, dst value: %v", it.Key(), it.Value(), dstValue)
 			}
 			c.stats.LogBytes(int64(len(it.Key()) + len(dstValue)))
 		default:
@@ -169,7 +180,31 @@ func (c *DBConverter) Verify(ctx context.Context) error {
 		}
 		c.stats.LogEntries(1)
 	}
-	return ctx.Err()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := it.Error(); err != nil {
+		return fmt.Errorf("source iterator error: %w", err)
+	}
+
+	it = dst.NewIterator(nil, nil)
+	defer it.Release()
+	for it.Next() && ctx.Err() == nil {
+		has, err := src.Has(it.Key())
+		if err != nil {
+			return fmt.Errorf("Failed to check key existence in source db, key: %v, err: %w", it.Key(), err)
+		}
+		if !has {
+			return fmt.Errorf("Unexpected key in destination db, key: %v", it.Key())
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := it.Error(); err != nil {
+		return fmt.Errorf("destination iterator error: %w", err)
+	}
+	return nil
 }
 
 func (c *DBConverter) Stats() *Stats {
