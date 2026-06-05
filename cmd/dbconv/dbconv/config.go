@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/spf13/pflag"
 
 	"github.com/offchainlabs/nitro/cmd/conf"
@@ -34,15 +35,28 @@ var DBConfigDefaultSrc = DBConfig{
 	Handles:   conf.PersistentConfigDefault.Handles,
 	Cache:     2048, // 2048 MB
 	Namespace: "srcdb/",
+	Pebble:    conf.PebbleConfigDefault,
 }
 
 func DBConfigAddOptions(prefix string, f *pflag.FlagSet, defaultConfig *DBConfig) {
 	f.String(prefix+".data", defaultConfig.Data, "directory of stored chain state")
-	f.String(prefix+".db-engine", defaultConfig.DBEngine, "backing database implementation to use ('leveldb' or 'pebble')")
+	f.String(prefix+".db-engine", defaultConfig.DBEngine, "backing database implementation to use ('leveldb', 'pebble', 'treedb' or '' = auto-detect)")
 	f.Int(prefix+".handles", defaultConfig.Handles, "number of files to be open simultaneously")
 	f.Int(prefix+".cache", defaultConfig.Cache, "the capacity(in megabytes) of the data caching")
 	f.String(prefix+".namespace", defaultConfig.Namespace, "metrics namespace")
 	conf.PebbleConfigAddOptions(prefix+".pebble", f, &defaultConfig.Pebble)
+}
+
+func (c *DBConfig) Validate(name string) error {
+	if c.DBEngine != rawdb.DBLeveldb && c.DBEngine != rawdb.DBPebble && c.DBEngine != rawdb.DBTreedb && c.DBEngine != "" {
+		return fmt.Errorf(`invalid %s.db-engine choice: %q, allowed "leveldb", "pebble", "treedb" or ""`, name, c.DBEngine)
+	}
+	if c.DBEngine == rawdb.DBPebble || c.DBEngine == "" {
+		if err := c.Pebble.Validate(); err != nil {
+			return fmt.Errorf("invalid %s.pebble config: %w", name, err)
+		}
+	}
+	return nil
 }
 
 type DBConvConfig struct {
@@ -85,6 +99,12 @@ func DBConvConfigAddOptions(f *pflag.FlagSet) {
 }
 
 func (c *DBConvConfig) Validate() error {
+	if err := c.Src.Validate("src"); err != nil {
+		return err
+	}
+	if err := c.Dst.Validate("dst"); err != nil {
+		return err
+	}
 	if c.Verify != "keys" && c.Verify != "full" && c.Verify != "" {
 		return fmt.Errorf("Invalid verify mode: %v", c.Verify)
 	}
