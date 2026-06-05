@@ -45,7 +45,7 @@ func PersistentConfigAddOptions(prefix string, f *pflag.FlagSet) {
 	f.String(prefix+".log-dir", PersistentConfigDefault.LogDir, "directory to store log file")
 	f.Int(prefix+".handles", PersistentConfigDefault.Handles, "number of file descriptor handles to use for the database")
 	f.String(prefix+".ancient", PersistentConfigDefault.Ancient, "directory of ancient where the chain freezer can be opened")
-	f.String(prefix+".db-engine", PersistentConfigDefault.DBEngine, "backing database implementation to use. If set to empty string the database type will be autodetected and if no pre-existing database is found it will default to creating new pebble database ('leveldb', 'pebble' or '' = auto-detect)")
+	f.String(prefix+".db-engine", PersistentConfigDefault.DBEngine, "backing database implementation to use. If set to empty string the database type will be autodetected and if no pre-existing database is found it will default to creating new pebble database ('leveldb', 'pebble', 'treedb' or '' = auto-detect)")
 	PebbleConfigAddOptions(prefix+".pebble", f, &PersistentConfigDefault.Pebble)
 }
 
@@ -93,15 +93,24 @@ func (c *PersistentConfig) ResolveDirectoryNames() error {
 }
 
 func DatabaseInDirectory(path string) bool {
-	// Consider database present if file `CURRENT` in directory
-	_, err := os.Stat(path + "/CURRENT")
-
-	return err == nil
+	// LevelDB and Pebble write CURRENT directly under the database directory.
+	if _, err := os.Stat(filepath.Join(path, "CURRENT")); err == nil {
+		return true
+	}
+	// TreeDB's geth adapter opens a root layout under <db>/maindb, while flat
+	// TreeDB main directories contain index.db directly.
+	if info, err := os.Stat(filepath.Join(path, "maindb", "index.db")); err == nil && !info.IsDir() {
+		return true
+	}
+	if info, err := os.Stat(filepath.Join(path, "index.db")); err == nil && !info.IsDir() {
+		return true
+	}
+	return false
 }
 
 func (c *PersistentConfig) Validate() error {
-	if c.DBEngine != "leveldb" && c.DBEngine != "pebble" && c.DBEngine != "" {
-		return fmt.Errorf(`invalid .db-engine choice: %q, allowed "leveldb", "pebble" or ""`, c.DBEngine)
+	if c.DBEngine != "leveldb" && c.DBEngine != "pebble" && c.DBEngine != "treedb" && c.DBEngine != "" {
+		return fmt.Errorf(`invalid .db-engine choice: %q, allowed "leveldb", "pebble", "treedb" or ""`, c.DBEngine)
 	}
 	// if DBEngine == "" then we may end up opening pebble database, so we want to validate the Pebble config
 	// if pre-existing database is leveldb backed, then user shouldn't change the Pebble config defaults => this check should also succeed

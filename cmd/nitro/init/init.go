@@ -1026,6 +1026,11 @@ func OpenExistingExecutionDB(stack *node.Node, config *config.NodeConfig, chainI
 				return executionDB, wasmDB, l2BlockChain, chainConfig, nil
 			}
 			readOnlyDb.Close()
+		} else if rawdb.IsDbErrRecoveryRequired(err) {
+			// TreeDB read-only probes can discover unapplied command WAL. Let the
+			// normal writable open path perform recovery instead of treating the probe
+			// failure as fatal.
+			log.Debug("l2chaindata read-only probe requires writable recovery", "err", err)
 		} else if !dbutil.IsNotExistError(err) {
 			// we only want to continue if the database does not exist
 			return nil, nil, nil, nil, fmt.Errorf("failed to open database: %w", err)
