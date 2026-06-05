@@ -34,6 +34,7 @@ import (
 	_ "github.com/ethereum/go-ethereum/eth/tracers/live"
 	_ "github.com/ethereum/go-ethereum/eth/tracers/native"
 	"github.com/ethereum/go-ethereum/ethclient"
+	"github.com/ethereum/go-ethereum/ethdb/treedb"
 	"github.com/ethereum/go-ethereum/graphql"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/node"
@@ -129,7 +130,7 @@ func closeDb(db io.Closer, name string) {
 	if db != nil {
 		err := db.Close()
 		// unfortunately the freezer db means we can't just use errors.Is
-		if err != nil && !strings.Contains(err.Error(), leveldb.ErrClosed.Error()) && !strings.Contains(err.Error(), pebble.ErrClosed.Error()) {
+		if err != nil && !strings.Contains(err.Error(), leveldb.ErrClosed.Error()) && !strings.Contains(err.Error(), pebble.ErrClosed.Error()) && !strings.Contains(err.Error(), treedb.ErrClosed.Error()) && !errors.Is(err, treedb.ErrClosed) {
 			log.Warn("failed to close database on shutdown", "db", name, "err", err)
 		}
 	}
